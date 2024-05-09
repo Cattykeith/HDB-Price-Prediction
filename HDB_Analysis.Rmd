@@ -1,0 +1,286 @@
+---
+title: "HDB Price Analysis"
+output: html_document
+date: "2024-04-30"
+---
+
+```{r}
+#Importing Modules
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(fitdistrplus)
+library(olsrr)
+library(leaps)
+library(boot)
+library(glmnet)
+library(randomForest)
+library(tree)
+library(ISLR)
+library(zoo)
+library(car)
+library(knitr)
+library(ggplot2)
+setwd("C:/Users/keith/OneDrive/Desktop/Github Projects/HDB Price Analysis")
+```
+
+```{r}
+#Data Pre-Processing
+data_h = read.csv("HDB_Hougang_Final.csv", stringsAsFactors = TRUE)
+data_s = read.csv("HDB_Serangoon_Final.csv", stringsAsFactors = TRUE)
+head(data_h)
+head(data_s)
+
+#Data Wrangling
+data_h = data_h %>% mutate(month = ym(as.character(month)))
+data_s = data_s %>% mutate(month = ym(as.character(month)))
+
+data_h = data_h %>% mutate(remaining_lease = as.integer(substr(data_h[,"remaining_lease"], start = 1, stop = 2)))
+data_s = data_s %>% mutate(remaining_lease = as.integer(substr(data_s[,"remaining_lease"], start = 1, stop = 2)))
+
+data_h["Real_Value"] = (data_h[,"resale_price"]/data_h[,"Price.Index"])*100
+data_s["Real_Value"] = (data_s[,"resale_price"]/data_s[,"Price.Index"])*100
+
+
+#Removing redundant data
+final_data_h = data_h %>% dplyr::select(Id, town, flat_type, storey_range, floor_area_sqm, flat_model, lease_commence_date, remaining_lease, Mrt_Distance, Real_Value)
+final_data_s = data_s %>% dplyr::select(Id, town, flat_type, storey_range, floor_area_sqm, flat_model, lease_commence_date, remaining_lease, Mrt_Distance, Real_Value)
+
+#Subset the Data
+summary(final_data_h)
+summary(final_data_s)
+#[Look specific into storey_range & flat_model might have lack of data for specific points]
+
+final_data_s %>% group_by(flat_model) %>% count() #[Remove adjoined flat due to low count]
+final_data_h %>% group_by(flat_model) %>% count() #[Remove redundant categories for fair comparison]
+categories = c("Apartment", "Improved", "Maisonette", "Model A", "New Generation", "Simplified")
+final_data_s = subset(final_data_s, flat_model %in% categories)
+final_data_h = subset(final_data_h, flat_model %in% categories)
+
+final_data_s %>% group_by(storey_range) %>% count()
+final_data_h %>% group_by(storey_range) %>% count() #[Remove 19 TO 21 due to lack of data points]
+final_data_h = subset(final_data_h, !(storey_range %in% "19 TO 21"))
+
+#Renaming Columns
+final_data = rbind(final_data_s, final_data_h)
+final_data = final_data %>% dplyr::rename(Town = town, Type = flat_type, Storey = storey_range, Area = floor_area_sqm, Model = flat_model, Lease_Begin = lease_commence_date, Lease_End = remaining_lease)
+
+#Eliminating Redundant Factors
+final_data[, "Storey"] = factor(final_data[, "Storey"])
+final_data[, "Model"] = factor(final_data[, "Model"])
+```
+
+```{r}
+#General plot of all variables
+pairs(final_data)
+
+#Testing for Multicollinearity
+
+#Area vs Type
+summary(lm(Area~Type, data = final_data)) #[R^2 suggest high collinearity]
+summary(lm(Real_Value ~ Type, data = final_data))
+summary(lm(Real_Value ~ Area, data = final_data))
+#[Both R^2 values are close, hence can test both for best model]
+
+#Lease_Begin vs Lease_End
+summary(lm(Lease_Begin ~ Lease_End, data = final_data)) #[R^2 suggest high collinearity]
+summary(lm(Real_Value ~ Lease_Begin, data = final_data))
+summary(lm(Real_Value ~ Lease_End, data = final_data))
+#[Both R^2 values are close, hence can test both for best model]
+
+#Area vs Model
+summary(lm(Area~Model, data = final_data)) #[R^2 suggest ambiguous collinearity]
+ols_vif_tol(lm(Real_Value ~ Area + Model, data = final_data)) #[gvif < 2 hence no collinearity issue]
+
+#Type vs Model
+type_model = lm(Real_Value ~ Type + Model, data = final_data)
+ols_vif_tol(type_model) #[High vif value indicates collinearity issue]
+```
+
+```{r}
+#Plot of individual variables against price
+for (i in colnames(final_data[2:(length(final_data[1,])-1)])) {
+  plot(final_data[, i], final_data[, "Real_Value"], xlab = i, ylab = "Real Value", main = sprintf("Relationship between %s & Real Value", i))
+}
+
+#[Serangoon seems to display higher real value as opposed to Hougang symbolizing mature estate effect]
+#[Strong linear trend in type of HDB and real value]
+#[Slight linear trend in storey and real value]
+#[Strong linear trend in area and real value]
+#[General linear trend in model and real value if ordered by mean]
+#[Ambiguous trends hence might be favorable to drop this for lease end]
+#[Possibly a polynomial trend]
+#[Very slight linear trend or polynomial trend]
+```
+
+```{r}
+#Train-Test-Split
+train = final_data %>% group_by(Town) %>% sample_frac(0.8, replace = FALSE)
+test = anti_join(final_data, train)
+
+train = subset(train, select = -c(Id, Lease_Begin))
+test = subset(test, select = -c(Id, Lease_Begin))
+
+#Base Relationship
+for (i in colnames(train)) {
+  print(summary(lm(paste("Real_Value ~", i), data = train)))
+}
+#[All variables shows statistical significance to 1% level however low explanatory power except Model, Area, Type]
+
+#Polynomial Variations 
+ggplot(train, aes(x = Mrt_Distance, y = Real_Value, color = Type)) + geom_point() + geom_smooth(formula = y ~ x)
+ggplot(train, aes(Mrt_Distance, Real_Value, color = Type)) + geom_point() + geom_smooth(formula = y ~ poly(x,2))
+
+ggplot(train, aes(Lease_End, Real_Value, color = Type)) + geom_point() + geom_smooth(formula = y ~ poly(x,2))
+ggplot(train, aes(Lease_End, Real_Value, color = Type)) + geom_point() + geom_smooth(formula = y ~ x)
+
+ggplot(train, aes(Area, Real_Value)) + geom_point() + geom_smooth(formula = y ~ poly(x,2))
+ggplot(train, aes(Area, Real_Value)) + geom_point() + geom_smooth(formula = y ~ x)
+#Poly function overfits to the training data hence better not to use it
+```
+
+```{r}
+#Best Subset Selection
+RNGkind(sample.kind = "Rounding")
+set.seed(6789)
+k = 5
+
+data_area = subset(train, select = -c(Type))
+data_type = subset(train, select = -c(Area, Model))
+
+predict.regsubsets <- function(object, newdata, id) {
+  form <- as.formula(object$call[[2]])
+  mat <- model.matrix(form, newdata)
+  coefi <- coef(object, id = id)
+  xvars <- names(coefi)
+  mat[, xvars] %*% coefi
+}
+
+folds <- sample(1:k, nrow(data_area), replace = TRUE)
+cv.errors <- matrix(NA, k, 14, dimnames = list(NULL, paste(1:14)))
+for (j in 1:k){
+  best.fit1 <- regsubsets(Real_Value ~ ., data = data_area[folds != j,], nvmax = 14) #Function for performing cross validation @ the j fold
+  for (i in 1:14) {
+    pred <- predict.regsubsets(best.fit1, data_area[folds ==j,], id = i) 
+    cv.errors[j, i] <- mean((train$Real_Value[folds ==j] - pred)^2) #Function for making prediction for computing the MSE
+  }
+}
+mean.cv1 <- apply(cv.errors, 2, mean) #apply function averages over the columns of the matrix 
+aa <- which.min(mean.cv1)
+
+folds <- sample(1:k, nrow(data_type), replace = TRUE)
+cv.errors <- matrix(NA, k, 12, dimnames = list(NULL, paste(1:12)))
+for (j in 1:k){
+  best.fit2 <- regsubsets(Real_Value ~ ., data = data_type[folds != j,], nvmax = 12) #Function for performing cross validation @ the j fold
+  for (i in 1:12) {
+    pred <- predict.regsubsets(best.fit2, data_type[folds ==j,], id = i) 
+    cv.errors[j, i] <- mean((train$Real_Value[folds ==j] - pred)^2) #Function for making prediction for computing the MSE
+  }
+}
+mean.cv2 <- apply(cv.errors, 2, mean) #apply function averages over the columns of the matrix 
+bb <- which.min(mean.cv2)
+
+folds <- sample(1:k, nrow(data_area), replace = TRUE)
+cv.errors <- matrix(NA, k, 16, dimnames = list(NULL, paste(1:16)))
+for (j in 1:k){
+  best.fit3 <- regsubsets(Real_Value ~ . - Mrt_Distance - Lease_End + poly(Mrt_Distance, 2) + poly(Lease_End,2), data = data_area[folds != j,], nvmax = 16) #Function for performing cross validation @ the j fold
+  for (i in 1:16) {
+    pred <- predict.regsubsets(best.fit3, data_area[folds ==j,], id = i) 
+    cv.errors[j, i] <- mean((train$Real_Value[folds ==j] - pred)^2) #Function for making prediction for computing the MSE
+  }
+}
+mean.cv3 <- apply(cv.errors, 2, mean) #apply function averages over the columns of the matrix 
+cc <- which.min(mean.cv3)
+
+folds <- sample(1:k, nrow(data_type), replace = TRUE)
+cv.errors <- matrix(NA, k, 14, dimnames = list(NULL, paste(1:14)))
+for (j in 1:k){
+  best.fit4 <- regsubsets(Real_Value ~ . - Mrt_Distance - Lease_End + poly(Mrt_Distance, 2) + poly(Lease_End,2), data = data_type[folds != j,], nvmax = 14) #Function for performing cross validation @ the j fold
+  for (i in 1:14) {
+    pred <- predict.regsubsets(best.fit4, data_type[folds ==j,], id = i) 
+    cv.errors[j, i] <- mean((train$Real_Value[folds ==j] - pred)^2) #Function for making prediction for computing the MSE
+  }
+}
+mean.cv4 <- apply(cv.errors, 2, mean) #apply function averages over the columns of the matrix 
+dd <- which.min(mean.cv4) #finds which regression model has the lowest MSE
+
+c(mean.cv1[aa], mean.cv2[bb], mean.cv3[cc], mean.cv4[dd])
+
+#First model is the best and all variables are used
+coef(best.fit1, aa)
+```
+
+```{r}
+#Interaction Effects
+#Variables: Town, Storey, Area, Model, Lease_End, Mrt_Distance
+
+#Initial Best Model
+RNGkind(sample.kind = "Rounding")
+set.seed(6789)
+
+lr.mod1 = glm(Real_Value ~ . - Type, data = train)
+cv.err1 = cv.glm(train, lr.mod1, K = 5)
+cv.err1$delta[1] #[Initial RMSE]
+
+#Town:Area
+lr.mod2 = glm(Real_Value ~ . - Type + Town:Area, data = train)
+cv.err2 = cv.glm(train, lr.mod2, K = 5)
+cv.err2$delta[1] #[Large improvement in RMSE]
+
+#Town:Model
+lr.mod3 = glm(Real_Value ~ . - Type + Town:Area + Town:Model, data = train)
+cv.err3 = cv.glm(train, lr.mod3, K = 5)
+cv.err3$delta[1] #[Good improvement in RMSE]
+
+#Storey:Area
+lr.mod4 = glm(Real_Value ~ . - Type + Town:Area + Town:Model + Storey:Area, data = train)
+cv.err4 = cv.glm(train, lr.mod4, K = 5)
+cv.err4$delta[1] #[Marginal improvement in RMSE]
+
+#Out-of-sample performance
+try = subset(test, select = -c(Real_Value))
+lr.pred = predict(lr.mod4, newdata = try)
+mean((test$Real_Value - lr.pred)^2)
+```
+
+```{r}
+#Normalization
+RNGkind(sample.kind = "Rounding")
+set.seed(6789)
+
+#Train-Test Generation
+x.train <- model.matrix(Real_Value ~ . - Type + Town:Area + Town:Model + Storey:Area, data = train)[, -1]
+y.train <- train$Real_Value
+
+x.test <- model.matrix(Real_Value ~ . - Type + Town:Area + Town:Model + Storey:Area, data = test)[, -1]
+y.test <- test$Real_Value
+
+#Ridge Regression
+ridge.mod <- cv.glmnet(x.train, y.train, alpha = 0)
+plot(ridge.mod)
+bestlam_ridge <- ridge.mod$lambda.min
+ridge.pred <- predict(ridge.mod, s = bestlam_ridge, newx = x.test) 
+mean((y.test - ridge.pred)^2)
+
+#Lasso Regression
+lasso.mod <- cv.glmnet(x.train, y.train, alpha = 1)
+plot(lasso.mod)
+bestlam_lasso <- lasso.mod$lambda.min
+lasso.pred <- predict(lasso.mod, s = bestlam_lasso, newx = x.test)
+mean((y.test - lasso.pred)^2) 
+```
+
+```{r}
+#RandomForest
+RNGkind(sample.kind = "Rounding")
+set.seed(6789)
+
+rf.mod <- randomForest(Real_Value ~ . - Type + Town:Area + Town:Model + Storey:Area, data = train, mtry = 6, importance = TRUE)
+rf.pred = predict(rf.mod, newdata = try)
+mean((rf.pred - test$Real_Value)^2) #[Greatly improved RMSE]
+```
+
+```{r}
+#Test Predictions
+
+```
