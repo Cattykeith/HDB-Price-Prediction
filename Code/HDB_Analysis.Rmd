@@ -1,6 +1,8 @@
 ---
 title: "HDB Price Analysis"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 date: "2024-04-30"
 ---
 
@@ -22,10 +24,10 @@ library(car)
 library(knitr)
 library(ggplot2)
 library(dgof)
+library(htmltools)
+library(tinytex)
 setwd("C:/Users/keith/OneDrive/Desktop/Github Projects/HDB Price Analysis")
-```
 
-```{r}
 #Data Pre-Processing
 data_h = read.csv("HDB_Hougang_Final.csv", stringsAsFactors = TRUE)
 data_s = read.csv("HDB_Serangoon_Final.csv", stringsAsFactors = TRUE)
@@ -68,9 +70,7 @@ final_test = anti_join(final_data, final_train)
 #Sectioning out Validation Set
 train = final_train %>% group_by(Town) %>% sample_frac(0.8, replace = FALSE)
 test = anti_join(final_train, train)
-```
 
-```{r}
 #Remove months and ID
 train = subset(train, select = -c(month, ID))
 test = subset(test, select = -c(month, ID))
@@ -98,9 +98,7 @@ ols_vif_tol(lm(Real_Value ~ Area + Model, data = train)) #[Slight Correlation]
 #Type vs Model
 type_model = lm(Real_Value ~ Type + Model, data = train)
 ols_vif_tol(type_model) #[High vif value indicates collinearity issue]
-```
 
-```{r}
 #Plot of individual variables against price
 for (i in colnames(train[1:(length(train[1,])-1)])) {
   plot(train[[i]], train[["Real_Value"]], xlab = i, ylab = "Real Value", main = sprintf("Relationship between %s & Real Value", i))
@@ -114,9 +112,7 @@ for (i in colnames(train[1:(length(train[1,])-1)])) {
 #[Ambiguous trends hence might be favorable to drop this for lease end]
 #[Possibly a polynomial trend]
 #[Very slight linear trend or polynomial trend]
-```
 
-```{r}
 #Base Relationship
 for (i in colnames(train)) {
   print(summary(lm(paste("Real_Value ~", i), data = train)))
@@ -133,9 +129,7 @@ ggplot(train, aes(Lease_End, Real_Value, color = Type)) + geom_point() + geom_sm
 ggplot(train, aes(Area, Real_Value)) + geom_point() + geom_smooth(formula = y ~ poly(x,2))
 ggplot(train, aes(Area, Real_Value)) + geom_point() + geom_smooth(formula = y ~ x)
 #Poly function overfits to the training data hence better not to use it
-```
 
-```{r}
 #Best Subset Selection
 RNGkind(sample.kind = "Rounding")
 set.seed(6789)
@@ -203,11 +197,8 @@ dd <- which.min(mean.cv4) #finds which regression model has the lowest MSE
 c(mean.cv1[aa], mean.cv2[bb], mean.cv3[cc], mean.cv4[dd])
 
 #First model is the best and all variables are used
-coef(best.fit1, aa)
-```
-#Base Model MSE: 863774121
+coef(best.fit1, aa) #[Base Model MSE: 863774121]
 
-```{r}
 #Interaction Effects
 #Variables: Town, Storey, Area, Model, Lease_End, Mrt_Distance
 
@@ -237,11 +228,8 @@ cv.err4$delta[1] #[Marginal improvement in RMSE]
 #Out-of-sample performance
 test_var = subset(test, select = -c(Real_Value))
 lr.pred = predict(lr.mod4, newdata = test_var)
-mean((test$Real_Value - lr.pred)^2)
-```
-#LR OOS Perf: 768447891
+mean((test$Real_Value - lr.pred)^2) #LR OOS Perf: 768447891
 
-```{r}
 #Normalization
 RNGkind(sample.kind = "Rounding")
 set.seed(6789)
@@ -266,11 +254,10 @@ plot(lasso.mod)
 bestlam_lasso <- lasso.mod$lambda.min
 lasso.pred <- predict(lasso.mod, s = bestlam_lasso, newx = x.test)
 mean((y.test - lasso.pred)^2)
-```
-Ridge OOS Perf: 878373145
-Lasso OOS Perf: 774889012
 
-```{r}
+#Ridge OOS Perf: 878373145
+#Lasso OOS Perf: 774889012
+
 #RandomForest
 RNGkind(sample.kind = "Rounding")
 set.seed(6789)
@@ -278,10 +265,8 @@ set.seed(6789)
 rf.mod <- randomForest(Real_Value ~ . - Type + Town:Area + Town:Model + Storey:Area, data = train, mtry = 6, importance = TRUE)
 rf.pred = predict(rf.mod, newdata = test_var)
 mean((test$Real_Value - rf.pred)^2) #[Greatly improved RMSE]
-```
-RF OOS Perf: 427348172
+#RF OOS Perf: 427348172
 
-```{r}
 #Test Predictions
 RNGkind(sample.kind = "Rounding")
 set.seed(6789)
@@ -294,11 +279,10 @@ mean((final_test$Real_Value - final_lr.pred)^2)
 final_rf.mod = randomForest(Real_Value ~ . + Town:Area + Town:Model + Storey:Area, data = final_train[, -c(1,2,4,8)], mtry = 6, importance = TRUE)
 final_rf.pred = predict(final_rf.mod, newdata = final_test_var)
 mean((final_rf.pred - final_test$Real_Value)^2)
-```
+
 #Final LR perf: 857393146
 #Final RF perf: 450740537
 
-```{r}
 #Ploting the Predictions
 plot(final_rf.pred, final_test$Real_Value, col = c("blue","black"), pch = 20, xlab = "Predicted Value", ylab = "Actual Value", main = "Performance of RandomForest Model")
 plot(final_lr.pred, final_test$Real_Value, col = c("red","black"), pch = 20, xlab = "Predicted Value", ylab = "Actual Value", main = "Performance of Linear Regression Model")
