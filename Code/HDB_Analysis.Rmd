@@ -21,6 +21,7 @@ library(zoo)
 library(car)
 library(knitr)
 library(ggplot2)
+library(dgof)
 setwd("C:/Users/keith/OneDrive/Desktop/Github Projects/HDB Price Analysis")
 ```
 
@@ -28,79 +29,81 @@ setwd("C:/Users/keith/OneDrive/Desktop/Github Projects/HDB Price Analysis")
 #Data Pre-Processing
 data_h = read.csv("HDB_Hougang_Final.csv", stringsAsFactors = TRUE)
 data_s = read.csv("HDB_Serangoon_Final.csv", stringsAsFactors = TRUE)
-head(data_h)
-head(data_s)
 
 #Data Wrangling
-data_h = data_h %>% mutate(month = ym(as.character(month)))
-data_s = data_s %>% mutate(month = ym(as.character(month)))
+final_data = rbind(data_h, data_s)
+head(final_data)
 
-data_h = data_h %>% mutate(remaining_lease = as.integer(substr(data_h[,"remaining_lease"], start = 1, stop = 2)))
-data_s = data_s %>% mutate(remaining_lease = as.integer(substr(data_s[,"remaining_lease"], start = 1, stop = 2)))
-
-data_h["Real_Value"] = (data_h[,"resale_price"]/data_h[,"Price.Index"])*100
-data_s["Real_Value"] = (data_s[,"resale_price"]/data_s[,"Price.Index"])*100
-
+final_data = mutate(final_data, ID = row_number())
+final_data = final_data %>% mutate(month = ym(as.character(month)))
+final_data = final_data %>% mutate(remaining_lease = as.integer(substr(final_data[,"remaining_lease"], start = 1, stop = 2)))
+final_data["Real_Value"] = (final_data[,"resale_price"]/final_data[,"Price.Index"])*100
 
 #Removing redundant data
-final_data_h = data_h %>% dplyr::select(Id, town, flat_type, storey_range, floor_area_sqm, flat_model, lease_commence_date, remaining_lease, Mrt_Distance, Real_Value)
-final_data_s = data_s %>% dplyr::select(Id, town, flat_type, storey_range, floor_area_sqm, flat_model, lease_commence_date, remaining_lease, Mrt_Distance, Real_Value)
+final_data = final_data %>% dplyr::select(month, ID, town, flat_type, storey_range, floor_area_sqm, flat_model, lease_commence_date, remaining_lease, Mrt_Distance, Real_Value)
+head(final_data)
 
-#Subset the Data
-summary(final_data_h)
-summary(final_data_s)
 #[Look specific into storey_range & flat_model might have lack of data for specific points]
 
-final_data_s %>% group_by(flat_model) %>% count() #[Remove adjoined flat due to low count]
-final_data_h %>% group_by(flat_model) %>% count() #[Remove redundant categories for fair comparison]
+final_data %>% group_by(flat_model, town) %>% count() #[Remove adjoined flat due to low count + Remove redundant categories for fair comparison]
 categories = c("Apartment", "Improved", "Maisonette", "Model A", "New Generation", "Simplified")
-final_data_s = subset(final_data_s, flat_model %in% categories)
-final_data_h = subset(final_data_h, flat_model %in% categories)
+final_data = subset(final_data, flat_model %in% categories)
 
-final_data_s %>% group_by(storey_range) %>% count()
-final_data_h %>% group_by(storey_range) %>% count() #[Remove 19 TO 21 due to lack of data points]
-final_data_h = subset(final_data_h, !(storey_range %in% "19 TO 21"))
+final_data %>% group_by(storey_range, town) %>% count() #[Remove 19 TO 21 due to lack of data points]
+final_data = subset(final_data, !(storey_range %in% "19 TO 21"))
+head(final_data)
+summary(final_data)
+
+#Removing Redundant Factors
+final_data[, "storey_range"] = factor(final_data[, "storey_range"])
+final_data[, "flat_model"] = factor(final_data[, "flat_model"])
 
 #Renaming Columns
-final_data = rbind(final_data_s, final_data_h)
 final_data = final_data %>% dplyr::rename(Town = town, Type = flat_type, Storey = storey_range, Area = floor_area_sqm, Model = flat_model, Lease_Begin = lease_commence_date, Lease_End = remaining_lease)
 
-#Eliminating Redundant Factors
-final_data[, "Storey"] = factor(final_data[, "Storey"])
-final_data[, "Model"] = factor(final_data[, "Model"])
+#Sectioning out Final Test Data
+final_train = final_data %>% group_by(Town) %>% sample_frac(0.9, replace = FALSE)
+final_test = anti_join(final_data, final_train)
+
+#Sectioning out Validation Set
+train = final_train %>% group_by(Town) %>% sample_frac(0.8, replace = FALSE)
+test = anti_join(final_train, train)
 ```
 
 ```{r}
+#Remove months and ID
+train = subset(train, select = -c(month, ID))
+test = subset(test, select = -c(month, ID))
+
 #General plot of all variables
-pairs(final_data)
+pairs(train)
 
 #Testing for Multicollinearity
-
 #Area vs Type
-summary(lm(Area~Type, data = final_data)) #[R^2 suggest high collinearity]
-summary(lm(Real_Value ~ Type, data = final_data))
-summary(lm(Real_Value ~ Area, data = final_data))
+summary(lm(Area~Type, data = train)) #[R^2 suggest high collinearity]
+summary(lm(Real_Value ~ Type, data = train))
+summary(lm(Real_Value ~ Area, data = train))
 #[Both R^2 values are close, hence can test both for best model]
 
 #Lease_Begin vs Lease_End
-summary(lm(Lease_Begin ~ Lease_End, data = final_data)) #[R^2 suggest high collinearity]
-summary(lm(Real_Value ~ Lease_Begin, data = final_data))
-summary(lm(Real_Value ~ Lease_End, data = final_data))
+summary(lm(Lease_Begin ~ Lease_End, data = train)) #[R^2 suggest high collinearity]
+summary(lm(Real_Value ~ Lease_Begin, data = train))
+summary(lm(Real_Value ~ Lease_End, data = train))
 #[Both R^2 values are close, hence can test both for best model]
 
 #Area vs Model
-summary(lm(Area~Model, data = final_data)) #[R^2 suggest ambiguous collinearity]
-ols_vif_tol(lm(Real_Value ~ Area + Model, data = final_data)) #[gvif < 2 hence no collinearity issue]
+summary(lm(Area~Model, data = train)) #[R^2 suggest ambiguous collinearity]
+ols_vif_tol(lm(Real_Value ~ Area + Model, data = train)) #[Slight Correlation]
 
 #Type vs Model
-type_model = lm(Real_Value ~ Type + Model, data = final_data)
+type_model = lm(Real_Value ~ Type + Model, data = train)
 ols_vif_tol(type_model) #[High vif value indicates collinearity issue]
 ```
 
 ```{r}
 #Plot of individual variables against price
-for (i in colnames(final_data[2:(length(final_data[1,])-1)])) {
-  plot(final_data[, i], final_data[, "Real_Value"], xlab = i, ylab = "Real Value", main = sprintf("Relationship between %s & Real Value", i))
+for (i in colnames(train[1:(length(train[1,])-1)])) {
+  plot(train[[i]], train[["Real_Value"]], xlab = i, ylab = "Real Value", main = sprintf("Relationship between %s & Real Value", i))
 }
 
 #[Serangoon seems to display higher real value as opposed to Hougang symbolizing mature estate effect]
@@ -114,13 +117,6 @@ for (i in colnames(final_data[2:(length(final_data[1,])-1)])) {
 ```
 
 ```{r}
-#Train-Test-Split
-train = final_data %>% group_by(Town) %>% sample_frac(0.8, replace = FALSE)
-test = anti_join(final_data, train)
-
-train = subset(train, select = -c(Id, Lease_Begin))
-test = subset(test, select = -c(Id, Lease_Begin))
-
 #Base Relationship
 for (i in colnames(train)) {
   print(summary(lm(paste("Real_Value ~", i), data = train)))
@@ -209,6 +205,7 @@ c(mean.cv1[aa], mean.cv2[bb], mean.cv3[cc], mean.cv4[dd])
 #First model is the best and all variables are used
 coef(best.fit1, aa)
 ```
+#Base Model MSE: 863774121
 
 ```{r}
 #Interaction Effects
@@ -222,7 +219,7 @@ lr.mod1 = glm(Real_Value ~ . - Type, data = train)
 cv.err1 = cv.glm(train, lr.mod1, K = 5)
 cv.err1$delta[1] #[Initial RMSE]
 
-#Town:Area
+#Town:Area#Town:Areacolours()
 lr.mod2 = glm(Real_Value ~ . - Type + Town:Area, data = train)
 cv.err2 = cv.glm(train, lr.mod2, K = 5)
 cv.err2$delta[1] #[Large improvement in RMSE]
@@ -238,10 +235,11 @@ cv.err4 = cv.glm(train, lr.mod4, K = 5)
 cv.err4$delta[1] #[Marginal improvement in RMSE]
 
 #Out-of-sample performance
-try = subset(test, select = -c(Real_Value))
-lr.pred = predict(lr.mod4, newdata = try)
+test_var = subset(test, select = -c(Real_Value))
+lr.pred = predict(lr.mod4, newdata = test_var)
 mean((test$Real_Value - lr.pred)^2)
 ```
+#LR OOS Perf: 768447891
 
 ```{r}
 #Normalization
@@ -267,8 +265,10 @@ lasso.mod <- cv.glmnet(x.train, y.train, alpha = 1)
 plot(lasso.mod)
 bestlam_lasso <- lasso.mod$lambda.min
 lasso.pred <- predict(lasso.mod, s = bestlam_lasso, newx = x.test)
-mean((y.test - lasso.pred)^2) 
+mean((y.test - lasso.pred)^2)
 ```
+Ridge OOS Perf: 878373145
+Lasso OOS Perf: 774889012
 
 ```{r}
 #RandomForest
@@ -276,11 +276,30 @@ RNGkind(sample.kind = "Rounding")
 set.seed(6789)
 
 rf.mod <- randomForest(Real_Value ~ . - Type + Town:Area + Town:Model + Storey:Area, data = train, mtry = 6, importance = TRUE)
-rf.pred = predict(rf.mod, newdata = try)
-mean((rf.pred - test$Real_Value)^2) #[Greatly improved RMSE]
+rf.pred = predict(rf.mod, newdata = test_var)
+mean((test$Real_Value - rf.pred)^2) #[Greatly improved RMSE]
 ```
+RF OOS Perf: 427348172
 
 ```{r}
 #Test Predictions
+RNGkind(sample.kind = "Rounding")
+set.seed(6789)
 
+final_test_var = subset(final_test, select = -c(month, ID, Type, Real_Value))
+final_lr.mod = lm(Real_Value ~ . + Town:Area + Town:Model + Storey:Area, data = final_train[, -c(1,2,4,8)])
+final_lr.pred = predict(final_lr.mod, newdata = final_test_var)
+mean((final_test$Real_Value - final_lr.pred)^2)
+
+final_rf.mod = randomForest(Real_Value ~ . + Town:Area + Town:Model + Storey:Area, data = final_train[, -c(1,2,4,8)], mtry = 6, importance = TRUE)
+final_rf.pred = predict(final_rf.mod, newdata = final_test_var)
+mean((final_rf.pred - final_test$Real_Value)^2)
+```
+#Final LR perf: 857393146
+#Final RF perf: 450740537
+
+```{r}
+#Ploting the Predictions
+plot(final_rf.pred, final_test$Real_Value, col = c("blue","black"), pch = 20, xlab = "Predicted Value", ylab = "Actual Value", main = "Performance of RandomForest Model")
+plot(final_lr.pred, final_test$Real_Value, col = c("red","black"), pch = 20, xlab = "Predicted Value", ylab = "Actual Value", main = "Performance of Linear Regression Model")
 ```
